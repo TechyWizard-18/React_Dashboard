@@ -7,562 +7,200 @@ import { httpsCallable } from 'firebase/functions';
 // import { QRCodeCanvas } from 'qrcode.react';
 // import { useReactToPrint } from 'react-to-print';
 import { doc, deleteDoc } from 'firebase/firestore';
-
-import QRCode from "qrcode";
-import html2canvas from "html2canvas";
-import jsPDF from "jspdf";
+import * as XLSX from 'xlsx';
 
 // #####################################################################
 // #  Sub-Component 1: QRCodeGenerator                               #
 // #####################################################################
 const QRCodeGenerator = () => {
+
     const [selectedType, setSelectedType] = useState('');
-    const [quantity, setQuantity] = useState(1);
+    const [quantity, setQuantity] = useState(100);
     const [generatedCodes, setGeneratedCodes] = useState([]);
     const [isGenerating, setIsGenerating] = useState(false);
-    const qrContainerRef = useRef(null);
+    const [feedbackMessage, setFeedbackMessage] = useState('');
 
     // QR Code type configurations
     const qrTypes = {
-        BOX: {
-            prefix: 'BOX',
-            color: '#e74c3c',
-            description: 'Box Packaging QR Codes',
-            icon: '📦'
-        },
-        FIBER: {
-            prefix: 'FIBER',
-            color: '#27ae60',
-            description: 'Fiber Material QR Codes',
-            icon: '🧵'
-        },
-        PACK: {
-            prefix: 'PACK',
-            color: '#3498db',
-            description: 'Package QR Codes',
-            icon: '📋'
+        BOX: { prefix: 'BOX', description: 'Box Packaging Codes', icon: '📦' },
+        FIBER: { prefix: 'FIB', description: 'Fiber Material Codes', icon: '🧵' },
+        PACK: { prefix: 'PCK', description: 'Package Codes', icon: '📋' }
+    };
+
+    /**
+     * --- NEW FUNCTION ---
+     * Generates a unique, short, and non-sequential code.
+     * This creates a 9-character alphanumeric string (36^9 possibilities),
+     * making collisions extremely unlikely even at a massive scale.
+     * The total code length will be prefix (3) + dash (1) + code (9) = 13 characters.
+     */
+    const generateUniqueCode = () => {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        const length = 9;
+        let result = '';
+        for (let i = 0; i < length; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
         }
+        return result;
     };
 
-    // Generate QR code ID with the specified format
-    const generateQRId = (type, index) => {
-        const paddedIndex = String(index + 1).padStart(2, '0');
-        const randomSuffix = Math.random().toString(36).substring(2, 5).toUpperCase();
-        return `${type}${paddedIndex}#&M${randomSuffix}`;
-    };
-
-    // Generate QR codes
-    const handleGenerateQRCodes = async () => {
+    // Generates the code data without creating images
+    const handleGenerateCodes = () => {
         if (!selectedType || quantity < 1) {
-            alert('Please select a QR type and specify a valid quantity.');
+            setFeedbackMessage('Please select a code type and enter a valid quantity.');
             return;
         }
 
         setIsGenerating(true);
-        const codes = [];
+        setFeedbackMessage(`Generating ${quantity} codes...`);
+        setGeneratedCodes([]);
 
-        try {
-            for (let i = 0; i < quantity; i++) {
-                const qrId = generateQRId(selectedType, i);
-                const qrDataURL = await QRCode.toDataURL(qrId, {
-                    width: 150,
-                    margin: 2,
-                    color: {
-                        dark: qrTypes[selectedType].color,
-                        light: '#FFFFFF'
-                    }
-                });
+        // Use a timeout to keep the UI responsive during large generation tasks
+        setTimeout(() => {
+            const codes = new Set(); // Use a Set to guarantee uniqueness within a single batch
+            const typePrefix = qrTypes[selectedType].prefix;
 
-                codes.push({
-                    id: qrId,
-                    dataURL: qrDataURL,
-                    type: selectedType
-                });
+            // Loop until the desired quantity of unique codes is generated
+            while (codes.size < quantity) {
+                const uniquePart = generateUniqueCode();
+                codes.add(`${typePrefix}-${uniquePart}`);
             }
 
-            setGeneratedCodes(codes);
-        } catch (error) {
-            console.error('Error generating QR codes:', error);
-            alert('Error generating QR codes. Please try again.');
-        } finally {
+            const codesArray = Array.from(codes).map(codeId => ({
+                'Batch Code ID': codeId,
+                'Type': selectedType,
+                'Generated At': new Date().toISOString()
+            }));
+
+            setGeneratedCodes(codesArray);
             setIsGenerating(false);
-        }
+            setFeedbackMessage(`✅ Successfully generated ${codesArray.length} unique ${selectedType} codes.`);
+        }, 50);
     };
 
-    // Export QR codes as PDF
-    const handleExportPDF = async () => {
+    // Exports the generated data to an Excel file
+    const handleExportExcel = () => {
         if (generatedCodes.length === 0) {
-            alert('No QR codes to export. Please generate codes first.');
+            setFeedbackMessage('No codes to export. Please generate codes first.');
             return;
         }
 
         try {
-            const canvas = await html2canvas(qrContainerRef.current, {
-                scale: 2,
-                backgroundColor: '#ffffff'
-            });
+            // Convert JSON to worksheet
+            const worksheet = XLSX.utils.json_to_sheet(generatedCodes);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Batch Codes');
 
-            const imgData = canvas.toDataURL('image/png');
-            const pdf = new jsPDF({
-                orientation: canvas.width > canvas.height ? 'landscape' : 'portrait',
-                unit: 'px',
-                format: [canvas.width, canvas.height]
-            });
+            // Optional: set column widths
+            worksheet['!cols'] = [{ wch: 20 }, { wch: 15 }, { wch: 30 }];
 
-            pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
-            pdf.save(`${selectedType}_QR_Codes_${quantity}_${new Date().toISOString().split('T')[0]}.pdf`);
+            // Generate file name
+            const fileName = `${selectedType}_${quantity}_Codes_${Date.now()}.xlsx`;
+
+            // Export
+            XLSX.writeFile(workbook, fileName);
+            setFeedbackMessage('Exported to Excel successfully!');
         } catch (error) {
-            console.error('Error exporting PDF:', error);
-            alert('Error exporting PDF. Please try again.');
+            console.error('Error exporting to Excel:', error);
+            setFeedbackMessage('Error exporting to Excel. Check the console for details.');
         }
     };
 
-    // Print QR codes
-    const handlePrint = () => {
-        if (generatedCodes.length === 0) {
-            alert('No QR codes to print. Please generate codes first.');
-            return;
-        }
-
-        const printWindow = window.open('', '_blank');
-        const qrContainer = qrContainerRef.current;
-
-        printWindow.document.write(`
-            <html lang="el">
-                <head>
-                    <title>QR Codes - ${selectedType}</title>
-                    <style>
-                        body { 
-                            font-family: Arial, sans-serif; 
-                            margin: 20px;
-                            background: white;
-                        }
-                        .print-header {
-                            text-align: center;
-                            margin-bottom: 30px;
-                            border-bottom: 2px solid #333;
-                            padding-bottom: 10px;
-                        }
-                        .qr-grid {
-                            display: grid;
-                            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                            gap: 20px;
-                            margin-top: 20px;
-                        }
-                        .qr-item {
-                            text-align: center;
-                            border: 1px solid #ddd;
-                            padding: 15px;
-                            border-radius: 8px;
-                            background: #f9f9f9;
-                            break-inside: avoid;
-                        }
-                        .qr-item img {
-                            max-width: 150px;
-                            margin-bottom: 10px;
-                        }
-                        .qr-id {
-                            font-weight: bold;
-                            font-size: 14px;
-                            margin-top: 10px;
-                        }
-                        @media print {
-                            body { margin: 0; }
-                            .qr-grid { gap: 15px; }
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="print-header">
-                        <h1>${qrTypes[selectedType].icon} ${qrTypes[selectedType].description}</h1>
-                        <p>Generated: ${new Date().toLocaleString()}</p>
-                        <p>Total Codes: ${generatedCodes.length}</p>
-                    </div>
-                    ${qrContainer.innerHTML}
-                </body>
-            </html>
-        `);
-
-        printWindow.document.close();
-        printWindow.print();
-    };
-
-    // Clear generated codes
+    // Clears the current state
     const handleClear = () => {
         setGeneratedCodes([]);
         setSelectedType('');
-        setQuantity(1);
+        setQuantity(100);
+        setFeedbackMessage('');
     };
 
-    // Styles
+    // Inline styles for the component
     const styles = {
-        container: {
-            maxWidth: '1200px',
-            margin: '0 auto',
-            padding: '20px',
-            fontFamily: 'Arial, sans-serif'
-        },
-        header: {
-            textAlign: 'center',
-            marginBottom: '40px',
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-            color: 'white',
-            padding: '30px',
-            borderRadius: '15px',
-            boxShadow: '0 10px 30px rgba(0,0,0,0.2)'
-        },
-        headerTitle: {
-            fontSize: '32px',
-            fontWeight: 'bold',
-            marginBottom: '10px',
-            textShadow: '2px 2px 4px rgba(0,0,0,0.3)'
-        },
-        headerSubtitle: {
-            fontSize: '16px',
-            opacity: 0.9
-        },
-        controlPanel: {
-            background: 'white',
-            padding: '30px',
-            borderRadius: '15px',
-            boxShadow: '0 5px 20px rgba(0,0,0,0.1)',
-            marginBottom: '30px'
-        },
-        controlRow: {
-            display: 'flex',
-            gap: '20px',
-            alignItems: 'end',
-            flexWrap: 'wrap',
-            marginBottom: '20px'
-        },
-        inputGroup: {
-            display: 'flex',
-            flexDirection: 'column',
-            minWidth: '200px'
-        },
-        label: {
-            fontSize: '14px',
-            fontWeight: 'bold',
-            marginBottom: '8px',
-            color: '#333'
-        },
-        select: {
-            padding: '12px',
-            border: '2px solid #e0e0e0',
-            borderRadius: '8px',
-            fontSize: '14px',
-            transition: 'border-color 0.3s ease',
-            outline: 'none'
-        },
-        input: {
-            padding: '12px',
-            border: '2px solid #e0e0e0',
-            borderRadius: '8px',
-            fontSize: '14px',
-            transition: 'border-color 0.3s ease',
-            outline: 'none'
-        },
-        button: {
-            padding: '12px 24px',
-            border: 'none',
-            borderRadius: '8px',
-            fontSize: '14px',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            transition: 'all 0.3s ease',
-            height: 'fit-content'
-        },
-        primaryButton: {
-            background: 'linear-gradient(135deg, #4CAF50, #45a049)',
-            color: 'white'
-        },
-        secondaryButton: {
-            background: 'linear-gradient(135deg, #2196F3, #1976D2)',
-            color: 'white'
-        },
-        dangerButton: {
-            background: 'linear-gradient(135deg, #f44336, #d32f2f)',
-            color: 'white'
-        },
-        warningButton: {
-            background: 'linear-gradient(135deg, #ff9800, #f57c00)',
-            color: 'white'
-        },
-        typeSelector: {
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '15px',
-            marginBottom: '20px'
-        },
-        typeCard: {
-            padding: '20px',
-            border: '2px solid #e0e0e0',
-            borderRadius: '12px',
-            textAlign: 'center',
-            cursor: 'pointer',
-            transition: 'all 0.3s ease',
-            background: '#f9f9f9'
-        },
-        typeCardSelected: {
-            borderColor: '#4CAF50',
-            background: '#e8f5e8',
-            transform: 'translateY(-2px)',
-            boxShadow: '0 5px 15px rgba(76, 175, 80, 0.3)'
-        },
-        typeIcon: {
-            fontSize: '32px',
-            marginBottom: '10px'
-        },
-        typeTitle: {
-            fontSize: '18px',
-            fontWeight: 'bold',
-            marginBottom: '5px'
-        },
-        typeDescription: {
-            fontSize: '12px',
-            color: '#666',
-            marginBottom: '10px'
-        },
-        qrGrid: {
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-            gap: '20px',
-            marginTop: '20px'
-        },
-        qrItem: {
-            textAlign: 'center',
-            background: 'white',
-            padding: '15px',
-            borderRadius: '12px',
-            border: '2px solid #f0f0f0',
-            transition: 'transform 0.3s ease',
-            boxShadow: '0 2px 10px rgba(0,0,0,0.1)'
-        },
-        qrImage: {
-            width: '150px',
-            height: '150px',
-            marginBottom: '10px'
-        },
-        qrId: {
-            fontSize: '12px',
-            fontWeight: 'bold',
-            color: '#333',
-            wordBreak: 'break-all'
-        },
-        resultsContainer: {
-            background: 'white',
-            padding: '30px',
-            borderRadius: '15px',
-            boxShadow: '0 5px 20px rgba(0,0,0,0.1)'
-        },
-        resultsHeader: {
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: '20px',
-            paddingBottom: '15px',
-            borderBottom: '2px solid #f0f0f0'
-        },
-        resultsTitle: {
-            fontSize: '24px',
-            fontWeight: 'bold',
-            color: '#333'
-        },
-        exportButtons: {
-            display: 'flex',
-            gap: '10px',
-            flexWrap: 'wrap'
-        },
-        loadingContainer: {
-            textAlign: 'center',
-            padding: '60px',
-            background: 'white',
-            borderRadius: '15px',
-            boxShadow: '0 5px 20px rgba(0,0,0,0.1)'
-        },
-        spinner: {
-            border: '4px solid #f3f3f3',
-            borderTop: '4px solid #4CAF50',
-            borderRadius: '50%',
-            width: '40px',
-            height: '40px',
-            animation: 'spin 2s linear infinite',
-            margin: '20px auto'
-        }
+        container: { maxWidth: '800px', margin: '2rem auto', fontFamily: 'Arial, sans-serif' },
+        header: { textAlign: 'center', marginBottom: '2rem', backgroundColor: '#fff', padding: '2rem', borderRadius: '1rem', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' },
+        controlPanel: { backgroundColor: '#fff', padding: '2rem', borderRadius: '1rem', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' },
+        inputGroup: { marginBottom: '1.5rem' },
+        label: { display: 'block', fontWeight: 'bold', marginBottom: '0.5rem', color: '#334155' },
+        typeSelector: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' },
+        typeButton: { padding: '1.5rem', borderRadius: '0.75rem', border: '2px solid #e2e8f0', textAlign: 'center', cursor: 'pointer', transition: 'all 0.2s' },
+        selectedType: { borderColor: '#3b82f6', backgroundColor: '#eff6ff', ring: '2px' },
+        icon: { fontSize: '2rem', marginBottom: '0.5rem' },
+        input: { width: '100%', padding: '0.75rem', fontSize: '1rem', borderRadius: '0.5rem', border: '2px solid #e2e8f0' },
+        buttonContainer: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', borderTop: '1px solid #e2e8f0', paddingTop: '1.5rem' },
+        button: { padding: '0.75rem 1.5rem', fontSize: '1rem', fontWeight: 'bold', borderRadius: '0.5rem', cursor: 'pointer', border: 'none', transition: 'background-color 0.2s' },
+        generateBtn: { backgroundColor: '#3b82f6', color: 'white' },
+        exportBtn: { backgroundColor: '#16a34a', color: 'white' },
+        clearBtn: { backgroundColor: '#ef4444', color: 'white' },
+        disabledBtn: { backgroundColor: '#94a3b8', cursor: 'not-allowed' },
+        feedback: { marginTop: '1.5rem', padding: '1rem', borderRadius: '0.5rem', backgroundColor: '#f1f5f9', textAlign: 'center' }
     };
-
-    // Add CSS animation for spinner
-    const spinnerKeyframes = `
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    `;
 
     return (
-        <>
-            <style>{spinnerKeyframes}</style>
-            <div style={styles.container}>
-                <div style={styles.header}>
-                    <h1 style={styles.headerTitle}>🔲 QR Code Generator</h1>
-                    <p style={styles.headerSubtitle}>Generate, Export, and Print QR Codes for BOX, FIBER, and PACK types</p>
-                </div>
+        <div style={styles.container}>
+            <header style={styles.header}>
+                <h1 style={{ fontSize: '2rem', fontWeight: 'bold', color: '#1e293b' }}>Batch Code Generator</h1>
+                <p style={{ color: '#64748b' }}>Generate unique codes and export them to Excel.</p>
+            </header>
 
-                <div style={styles.controlPanel}>
-                    <div style={styles.inputGroup}>
-                        <label style={styles.label}>Select QR Code Type:</label>
-                        <div style={styles.typeSelector}>
-                            {Object.entries(qrTypes).map(([type, config]) => (
-                                <div
-                                    key={type}
-                                    style={{
-                                        ...styles.typeCard,
-                                        ...(selectedType === type ? styles.typeCardSelected : {})
-                                    }}
-                                    onClick={() => setSelectedType(type)}
-                                >
-                                    <div style={styles.typeIcon}>{config.icon}</div>
-                                    <div style={styles.typeTitle}>{type}</div>
-                                    <div style={styles.typeDescription}>{config.description}</div>
-                                    <div style={{
-                                        width: '20px',
-                                        height: '20px',
-                                        backgroundColor: config.color,
-                                        borderRadius: '50%',
-                                        margin: '10px auto 0',
-                                        border: '2px solid white',
-                                        boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
-                                    }}></div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div style={styles.controlRow}>
-                        <div style={styles.inputGroup}>
-                            <label style={styles.label}>Quantity:</label>
-                            <input
-                                type="number"
-                                min="1"
-                                max="100"
-                                value={quantity}
-                                onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
-                                style={styles.input}
-                                placeholder="Enter quantity (1-100)"
-                            />
-                        </div>
-
-                        <button
-                            onClick={handleGenerateQRCodes}
-                            disabled={!selectedType || isGenerating}
-                            style={{
-                                ...styles.button,
-                                ...styles.primaryButton,
-                                opacity: (!selectedType || isGenerating) ? 0.6 : 1
-                            }}
-                        >
-                            {isGenerating ? 'Generating...' : '🔲 Generate QR Codes'}
-                        </button>
-
-                        {generatedCodes.length > 0 && (
+            <main style={styles.controlPanel}>
+                <div style={styles.inputGroup}>
+                    <label style={styles.label}>1. Select Code Type</label>
+                    <div style={styles.typeSelector}>
+                        {Object.entries(qrTypes).map(([type, config]) => (
                             <button
-                                onClick={handleClear}
-                                style={{
-                                    ...styles.button,
-                                    ...styles.dangerButton
-                                }}
+                                key={type}
+                                style={{ ...styles.typeButton, ...(selectedType === type ? styles.selectedType : {}) }}
+                                onClick={() => setSelectedType(type)}
                             >
-                                🗑️ Clear All
+                                <div style={styles.icon}>{config.icon}</div>
+                                <div style={{ fontWeight: 'bold' }}>{config.prefix}</div>
+                                <div style={{ fontSize: '0.8rem', color: '#64748b' }}>{config.description}</div>
                             </button>
-                        )}
+                        ))}
                     </div>
                 </div>
 
-                {isGenerating && (
-                    <div style={styles.loadingContainer}>
-                        <div style={styles.spinner}></div>
-                        <h3>Generating {quantity} QR Codes...</h3>
-                        <p>Please wait while we create your {selectedType} QR codes.</p>
-                    </div>
-                )}
+                <div style={styles.inputGroup}>
+                    <label style={styles.label} htmlFor="quantity">2. Enter Quantity</label>
+                    <input
+                        id="quantity"
+                        type="number"
+                        min="1"
+                        max="100000"
+                        value={quantity}
+                        onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        style={styles.input}
+                    />
+                </div>
 
-                {generatedCodes.length > 0 && (
-                    <div style={styles.resultsContainer}>
-                        <div style={styles.resultsHeader}>
-                            <div>
-                                <h2 style={styles.resultsTitle}>
-                                    {qrTypes[selectedType].icon} Generated {selectedType} QR Codes ({generatedCodes.length})
-                                </h2>
-                                <p style={{ color: '#666', margin: '5px 0 0 0' }}>
-                                    Generated on {new Date().toLocaleDateString()} at {new Date().toLocaleTimeString()}
-                                </p>
-                            </div>
-                            <div style={styles.exportButtons}>
-                                <button
-                                    onClick={handleExportPDF}
-                                    style={{
-                                        ...styles.button,
-                                        ...styles.secondaryButton
-                                    }}
-                                >
-                                    📄 Export PDF
-                                </button>
-                                <button
-                                    onClick={handlePrint}
-                                    style={{
-                                        ...styles.button,
-                                        ...styles.warningButton
-                                    }}
-                                >
-                                    🖨️ Print
-                                </button>
-                            </div>
-                        </div>
+                <div style={styles.buttonContainer}>
+                    <button
+                        onClick={handleGenerateCodes}
+                        disabled={!selectedType || isGenerating}
+                        style={{ ...styles.button, ...styles.generateBtn, ...((!selectedType || isGenerating) && styles.disabledBtn) }}
+                    >
+                        {isGenerating ? 'Generating...' : 'Generate Codes'}
+                    </button>
+                    <button
+                        onClick={handleExportExcel}
+                        disabled={generatedCodes.length === 0 || isGenerating}
+                        style={{ ...styles.button, ...styles.exportBtn, ...((generatedCodes.length === 0 || isGenerating) && styles.disabledBtn) }}
+                    >
+                        Export to Excel
+                    </button>
+                    <button
+                        onClick={handleClear}
+                        style={{ ...styles.button, ...styles.clearBtn }}
+                    >
+                        Clear
+                    </button>
+                </div>
 
-                        <div ref={qrContainerRef} style={styles.qrGrid} className="qr-grid">
-                            {generatedCodes.map((code, index) => (
-                                <div key={index} style={styles.qrItem} className="qr-item">
-                                    <img
-                                        src={code.dataURL}
-                                        alt={`QR Code ${code.id}`}
-                                        style={styles.qrImage}
-                                    />
-                                    <div style={styles.qrId} className="qr-id">{code.id}</div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
+                {feedbackMessage && (
+                    <div style={styles.feedback}>{feedbackMessage}</div>
                 )}
-
-                {!isGenerating && generatedCodes.length === 0 && selectedType && (
-                    <div style={styles.loadingContainer}>
-                        <h3>Ready to Generate {selectedType} QR Codes</h3>
-                        <p>Click the "Generate QR Codes" button to create {quantity} {selectedType} QR codes.</p>
-                        <div style={{
-                            fontSize: '64px',
-                            margin: '20px 0',
-                            opacity: 0.3
-                        }}>
-                            {qrTypes[selectedType].icon}
-                        </div>
-                    </div>
-                )}
-
-                {!selectedType && (
-                    <div style={styles.loadingContainer}>
-                        <h3>Welcome to QR Code Generator</h3>
-                        <p>Select a QR code type above to get started.</p>
-                        <div style={{
-                            fontSize: '64px',
-                            margin: '20px 0',
-                            opacity: 0.3
-                        }}>
-                            🔲
-                        </div>
-                    </div>
-                )}
-            </div>
-        </>
+            </main>
+        </div>
     );
 };
 
@@ -866,8 +504,13 @@ const UserManagement = ({ functions }) => {
 // #####################################################################
 const AddSource = ({ db }) => {
     const [sourceName, setSourceName] = useState('');
+    // --- MODIFICATION START ---
+    const [contactInfo, setContactInfo] = useState('');
+    const [city, setCity] = useState('');
+    const [country, setCountry] = useState('');
+    // --- MODIFICATION END ---
     const [message, setMessage] = useState('');
-    const [messageType, setMessageType] = useState(''); // Added message type
+    const [messageType, setMessageType] = useState('');
     const [isLoading, setIsLoading] = useState(false);
 
     // Enhanced styles for this component
@@ -937,8 +580,10 @@ const AddSource = ({ db }) => {
 
     const handleAddSource = async (e) => {
         e.preventDefault();
-        if (!sourceName.trim()) {
-            setMessage("Please enter a source name.");
+        // --- MODIFICATION START ---
+        if (!sourceName.trim() || !contactInfo.trim() || !city.trim() || !country.trim()) {
+            setMessage("Please fill out all fields.");
+            // --- MODIFICATION END ---
             setMessageType('error');
             return;
         }
@@ -947,8 +592,8 @@ const AddSource = ({ db }) => {
         setMessage('');
 
         try {
-            // Try with lowercase 'sources' first (more common)
-            // If that doesn't work, try with uppercase 'Sources'
+            // This is just a placeholder for the real firestore functions
+
             let collectionRef;
             try {
                 collectionRef = collection(db, "sources");
@@ -957,14 +602,26 @@ const AddSource = ({ db }) => {
                 collectionRef = collection(db, "Sources");
             }
 
+            // --- MODIFICATION START ---
             await addDoc(collectionRef, {
                 name: sourceName.trim(),
-                createdAt: new Date() // Add timestamp for better tracking
+                contact: contactInfo.trim(),
+                address: {
+                    city: city.trim(),
+                    country: country.trim()
+                },
+                createdAt: new Date()
             });
+            // --- MODIFICATION END ---
 
             setMessage(`Source '${sourceName}' added successfully!`);
             setMessageType('success');
             setSourceName('');
+            // --- MODIFICATION START ---
+            setContactInfo('');
+            setCity('');
+            setCountry('');
+            // --- MODIFICATION END ---
         } catch (error) {
             console.error("Add Source Error:", error);
             setMessage("Error adding source. Please check console for details.");
@@ -985,6 +642,29 @@ const AddSource = ({ db }) => {
                     onChange={(e) => setSourceName(e.target.value)}
                     placeholder="Enter new source name"
                 />
+                {/* --- NEW FIELDS START --- */}
+                <input
+                    style={asStyles.input}
+                    type="text"
+                    value={contactInfo}
+                    onChange={(e) => setContactInfo(e.target.value)}
+                    placeholder="Enter contact info (email or phone)"
+                />
+                <input
+                    style={asStyles.input}
+                    type="text"
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    placeholder="Enter city"
+                />
+                <input
+                    style={asStyles.input}
+                    type="text"
+                    value={country}
+                    onChange={(e) => setCountry(e.target.value)}
+                    placeholder="Enter country"
+                />
+                {/* --- NEW FIELDS END --- */}
                 <button
                     type="submit"
                     style={{
@@ -1006,9 +686,7 @@ const AddSource = ({ db }) => {
             )}
         </div>
     );
-};
-// #####################################################################
-// #  Sub-Component 4: AddVendor                                     #
+};// #  Sub-Component 4: AddVendor                                     #
 // #####################################################################
 
 const AddVendor = ({ db }) => {

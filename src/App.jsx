@@ -26,12 +26,12 @@ const functions = getFunctions(app);
 const auth = getAuth(app);
 
 // --- EMULATOR CONNECTION (for local testing) ---
-if (window.location.hostname === "localhost") {
-    console.log("✅ DEVELOPMENT MODE: Connecting to local Firebase Emulators");
-    connectFirestoreEmulator(db, 'localhost', 8016); // Make sure this port is correct
-    connectFunctionsEmulator(functions, 'localhost', 5002); // Make sure this port is correct
-    connectAuthEmulator(auth, 'http://localhost:9098'); // Make sure this port is correct
-}
+// if (window.location.hostname === "localhost") {
+//     console.log("✅ DEVELOPMENT MODE: Connecting to local Firebase Emulators");
+//     connectFirestoreEmulator(db, 'localhost', 8016); // Make sure this port is correct
+//     connectFunctionsEmulator(functions, 'localhost', 5002); // Make sure this port is correct
+//     connectAuthEmulator(auth, 'http://localhost:9098'); // Make sure this port is correct
+// }
 
 function App() {
     const [user, setUser] = useState(null);
