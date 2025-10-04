@@ -11,166 +11,196 @@ import * as XLSX from 'xlsx';
 import { query, orderBy, limit, startAfter, where } from 'firebase/firestore';
 // At the top of Dashboard.jsx
 import {  documentId} from 'firebase/firestore';
-
-
+import QRCode from "qrcode";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
+import VendorShipments from './VendorShipments';
 // #####################################################################
 // #  Sub-Component 1: QRCodeGenerator                               #
 // #####################################################################
-
-
-
 const QRCodeGenerator = () => {
     const [selectedType, setSelectedType] = useState('');
     const [quantity, setQuantity] = useState(1);
+    const [generatedCodes, setGeneratedCodes] = useState([]);
     const [isGenerating, setIsGenerating] = useState(false);
-    const [generationStatus, setGenerationStatus] = useState('');
+    const qrContainerRef = useRef(null);
 
     // QR Code type configurations
     const qrTypes = {
         BOX: {
-            prefix: 'BX',
+            prefix: 'BOX',
             color: '#e74c3c',
             description: 'Box Packaging QR Codes',
             icon: '📦'
         },
         FIBER: {
-            prefix: 'FX',
+            prefix: 'FIBER',
             color: '#27ae60',
             description: 'Fiber Material QR Codes',
             icon: '🧵'
         },
         PACK: {
-            prefix: 'PX',
+            prefix: 'PACK',
             color: '#3498db',
             description: 'Package QR Codes',
             icon: '📋'
         }
     };
 
-    // Generate QR code ID with unique hash combining timestamp, random chars, and sequential number
+    // Generate QR code ID with the specified format
     const generateQRId = (type, index) => {
-        const now = new Date();
-
-        // Get timestamp components
-        const year = now.getFullYear().toString();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        const day = String(now.getDate()).padStart(2, '0');
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
-        const seconds = String(now.getSeconds()).padStart(2, '0');
-        const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
-
-        // Sequential number (padded to 6 digits for up to 999,999 codes)
-        const sequentialNum = String(index + 1).padStart(6, '0');
-
-        // Random alphanumeric string (8 characters)
-        const randomChars = Math.random().toString(36).substring(2, 10).toUpperCase();
-
-        // Create unique hash: PREFIX + YYYYMMDD + HHMMSS + MS + SEQ + RANDOM
-        // Example: BX20251003145230123000001A4F2G9H1
-        const uniqueHash = `${year}${month}${day}${hours}${minutes}${seconds}${milliseconds}${sequentialNum}${randomChars}`;
-
-        return `${qrTypes[type].prefix}${uniqueHash}`;
+        const paddedIndex = String(index + 1).padStart(2, '0');
+        const randomSuffix = Math.random().toString(36).substring(2, 5).toUpperCase();
+        return `${type}${paddedIndex}#&M${randomSuffix}`;
     };
 
-    // Generate QR codes and export to Excel efficiently
-    const handleGenerateAndExport = async () => {
+    // Generate QR codes
+    const handleGenerateQRCodes = async () => {
         if (!selectedType || quantity < 1) {
             alert('Please select a QR type and specify a valid quantity.');
             return;
         }
 
-        if (quantity > 1000000) {
-            alert('Maximum quantity is 10,00,000 (10 lakh) QR codes.');
-            return;
-        }
-
         setIsGenerating(true);
-        setGenerationStatus(`Generating ${quantity.toLocaleString()} QR codes...`);
+        const codes = [];
 
         try {
-            const allData = [];
-            const generationTimestamp = new Date();
-            const generationDate = generationTimestamp.toLocaleDateString('en-IN');
-            const generationTime = generationTimestamp.toLocaleString('en-IN', {
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: true
-            });
-
-            // Generate QR codes in batches
             for (let i = 0; i < quantity; i++) {
                 const qrId = generateQRId(selectedType, i);
-
-                allData.push({
-                    'Serial Number': i + 1,
-                    'QR Code': qrId,
-                    'Date': generationDate,
-                    'Timestamp': generationTime
+                const qrDataURL = await QRCode.toDataURL(qrId, {
+                    width: 150,
+                    margin: 2,
+                    color: {
+                        dark: qrTypes[selectedType].color,
+                        light: '#FFFFFF'
+                    }
                 });
 
-                // Update status every 1000 codes
-                if ((i + 1) % 1000 === 0) {
-                    setGenerationStatus(`Generated ${(i + 1).toLocaleString()} / ${quantity.toLocaleString()} codes...`);
-                    // Allow UI to update
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
+                codes.push({
+                    id: qrId,
+                    dataURL: qrDataURL,
+                    type: selectedType
+                });
             }
 
-            setGenerationStatus('Preparing Excel file...');
-            await new Promise(resolve => setTimeout(resolve, 100));
-
-            // Create worksheet from data
-            const worksheet = XLSX.utils.json_to_sheet(allData);
-
-            // Set column widths
-            worksheet['!cols'] = [
-                { wch: 15 }, // Serial Number
-                { wch: 25 }, // QR Code
-                { wch: 15 }, // Date
-                { wch: 25 }  // Timestamp
-            ];
-
-            // Create workbook
-            const workbook = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(workbook, worksheet, `${selectedType} QR Codes`);
-
-            // Generate filename
-            const filename = `${selectedType}_QR_Codes_${quantity}_${new Date().toISOString().split('T')[0].replace(/-/g, '')}.xlsx`;
-
-            // Export to Excel
-            XLSX.writeFile(workbook, filename);
-
-            setGenerationStatus(`✅ Successfully generated and exported ${quantity.toLocaleString()} QR codes!`);
-
-            setTimeout(() => {
-                setGenerationStatus('');
-            }, 3000);
-
+            setGeneratedCodes(codes);
         } catch (error) {
             console.error('Error generating QR codes:', error);
-            alert('Error generating QR codes. Please try again with a smaller quantity.');
-            setGenerationStatus('');
+            alert('Error generating QR codes. Please try again.');
         } finally {
             setIsGenerating(false);
         }
     };
 
-    // Clear form
+    // Export QR codes as PDF
+    const handleExportPDF = async () => {
+        if (generatedCodes.length === 0) {
+            alert('No QR codes to export. Please generate codes first.');
+            return;
+        }
+
+        try {
+            const canvas = await html2canvas(qrContainerRef.current, {
+                scale: 2,
+                backgroundColor: '#ffffff'
+            });
+
+            const imgData = canvas.toDataURL('image/png');
+            const pdf = new jsPDF({
+                orientation: canvas.width > canvas.height ? 'landscape' : 'portrait',
+                unit: 'px',
+                format: [canvas.width, canvas.height]
+            });
+
+            pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+            pdf.save(`${selectedType}_QR_Codes_${quantity}_${new Date().toISOString().split('T')[0]}.pdf`);
+        } catch (error) {
+            console.error('Error exporting PDF:', error);
+            alert('Error exporting PDF. Please try again.');
+        }
+    };
+
+    // Print QR codes
+    const handlePrint = () => {
+        if (generatedCodes.length === 0) {
+            alert('No QR codes to print. Please generate codes first.');
+            return;
+        }
+
+        const printWindow = window.open('', '_blank');
+        const qrContainer = qrContainerRef.current;
+
+        printWindow.document.write(`
+            <html lang="el">
+                <head>
+                    <title>QR Codes - ${selectedType}</title>
+                    <style>
+                        body { 
+                            font-family: Arial, sans-serif; 
+                            margin: 20px;
+                            background: white;
+                        }
+                        .print-header {
+                            text-align: center;
+                            margin-bottom: 30px;
+                            border-bottom: 2px solid #333;
+                            padding-bottom: 10px;
+                        }
+                        .qr-grid {
+                            display: grid;
+                            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                            gap: 20px;
+                            margin-top: 20px;
+                        }
+                        .qr-item {
+                            text-align: center;
+                            border: 1px solid #ddd;
+                            padding: 15px;
+                            border-radius: 8px;
+                            background: #f9f9f9;
+                            break-inside: avoid;
+                        }
+                        .qr-item img {
+                            max-width: 150px;
+                            margin-bottom: 10px;
+                        }
+                        .qr-id {
+                            font-weight: bold;
+                            font-size: 14px;
+                            margin-top: 10px;
+                        }
+                        @media print {
+                            body { margin: 0; }
+                            .qr-grid { gap: 15px; }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class="print-header">
+                        <h1>${qrTypes[selectedType].icon} ${qrTypes[selectedType].description}</h1>
+                        <p>Generated: ${new Date().toLocaleString()}</p>
+                        <p>Total Codes: ${generatedCodes.length}</p>
+                    </div>
+                    ${qrContainer.innerHTML}
+                </body>
+            </html>
+        `);
+
+        printWindow.document.close();
+        printWindow.print();
+    };
+
+    // Clear generated codes
     const handleClear = () => {
+        setGeneratedCodes([]);
         setSelectedType('');
         setQuantity(1);
-        setGenerationStatus('');
     };
 
     // Styles
     const styles = {
         container: {
-            maxWidth: '900px',
+            maxWidth: '1200px',
             margin: '0 auto',
             padding: '20px',
             fontFamily: 'Arial, sans-serif'
@@ -211,14 +241,21 @@ const QRCodeGenerator = () => {
         inputGroup: {
             display: 'flex',
             flexDirection: 'column',
-            minWidth: '200px',
-            flex: 1
+            minWidth: '200px'
         },
         label: {
             fontSize: '14px',
             fontWeight: 'bold',
             marginBottom: '8px',
             color: '#333'
+        },
+        select: {
+            padding: '12px',
+            border: '2px solid #e0e0e0',
+            borderRadius: '8px',
+            fontSize: '14px',
+            transition: 'border-color 0.3s ease',
+            outline: 'none'
         },
         input: {
             padding: '12px',
@@ -242,8 +279,16 @@ const QRCodeGenerator = () => {
             background: 'linear-gradient(135deg, #4CAF50, #45a049)',
             color: 'white'
         },
+        secondaryButton: {
+            background: 'linear-gradient(135deg, #2196F3, #1976D2)',
+            color: 'white'
+        },
         dangerButton: {
             background: 'linear-gradient(135deg, #f44336, #d32f2f)',
+            color: 'white'
+        },
+        warningButton: {
+            background: 'linear-gradient(135deg, #ff9800, #f57c00)',
             color: 'white'
         },
         typeSelector: {
@@ -281,12 +326,62 @@ const QRCodeGenerator = () => {
             color: '#666',
             marginBottom: '10px'
         },
-        statusContainer: {
+        qrGrid: {
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+            gap: '20px',
+            marginTop: '20px'
+        },
+        qrItem: {
+            textAlign: 'center',
+            background: 'white',
+            padding: '15px',
+            borderRadius: '12px',
+            border: '2px solid #f0f0f0',
+            transition: 'transform 0.3s ease',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.1)'
+        },
+        qrImage: {
+            width: '150px',
+            height: '150px',
+            marginBottom: '10px'
+        },
+        qrId: {
+            fontSize: '12px',
+            fontWeight: 'bold',
+            color: '#333',
+            wordBreak: 'break-all'
+        },
+        resultsContainer: {
             background: 'white',
             padding: '30px',
             borderRadius: '15px',
-            boxShadow: '0 5px 20px rgba(0,0,0,0.1)',
-            textAlign: 'center'
+            boxShadow: '0 5px 20px rgba(0,0,0,0.1)'
+        },
+        resultsHeader: {
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '20px',
+            paddingBottom: '15px',
+            borderBottom: '2px solid #f0f0f0'
+        },
+        resultsTitle: {
+            fontSize: '24px',
+            fontWeight: 'bold',
+            color: '#333'
+        },
+        exportButtons: {
+            display: 'flex',
+            gap: '10px',
+            flexWrap: 'wrap'
+        },
+        loadingContainer: {
+            textAlign: 'center',
+            padding: '60px',
+            background: 'white',
+            borderRadius: '15px',
+            boxShadow: '0 5px 20px rgba(0,0,0,0.1)'
         },
         spinner: {
             border: '4px solid #f3f3f3',
@@ -294,27 +389,8 @@ const QRCodeGenerator = () => {
             borderRadius: '50%',
             width: '40px',
             height: '40px',
-            animation: 'spin 1s linear infinite',
+            animation: 'spin 2s linear infinite',
             margin: '20px auto'
-        },
-        infoBox: {
-            background: '#e3f2fd',
-            border: '1px solid #2196F3',
-            borderRadius: '8px',
-            padding: '15px',
-            marginTop: '20px'
-        },
-        infoTitle: {
-            fontSize: '16px',
-            fontWeight: 'bold',
-            color: '#1976D2',
-            marginBottom: '10px'
-        },
-        infoList: {
-            textAlign: 'left',
-            color: '#333',
-            fontSize: '14px',
-            lineHeight: '1.8'
         }
     };
 
@@ -332,7 +408,7 @@ const QRCodeGenerator = () => {
             <div style={styles.container}>
                 <div style={styles.header}>
                     <h1 style={styles.headerTitle}>🔲 QR Code Generator</h1>
-                    <p style={styles.headerSubtitle}>Generate unique QR Codes and export to Excel</p>
+                    <p style={styles.headerSubtitle}>Generate, Export, and Print QR Codes for BOX, FIBER, and PACK types</p>
                 </div>
 
                 <div style={styles.controlPanel}>
@@ -367,80 +443,104 @@ const QRCodeGenerator = () => {
 
                     <div style={styles.controlRow}>
                         <div style={styles.inputGroup}>
-                            <label style={styles.label}>Quantity (Max: 10,00,000):</label>
+                            <label style={styles.label}>Quantity:</label>
                             <input
                                 type="number"
                                 min="1"
-                                max="1000000"
+                                max="100"
                                 value={quantity}
                                 onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
                                 style={styles.input}
-                                placeholder="Enter quantity (1 to 10,00,000)"
-                                disabled={isGenerating}
+                                placeholder="Enter quantity (1-100)"
                             />
                         </div>
 
                         <button
-                            onClick={handleGenerateAndExport}
-                            disabled={!selectedType || isGenerating || quantity < 1}
+                            onClick={handleGenerateQRCodes}
+                            disabled={!selectedType || isGenerating}
                             style={{
                                 ...styles.button,
                                 ...styles.primaryButton,
-                                opacity: (!selectedType || isGenerating || quantity < 1) ? 0.6 : 1,
-                                cursor: (!selectedType || isGenerating || quantity < 1) ? 'not-allowed' : 'pointer'
+                                opacity: (!selectedType || isGenerating) ? 0.6 : 1
                             }}
                         >
-                            {isGenerating ? '⏳ Processing...' : '📊 Generate & Export to Excel'}
+                            {isGenerating ? 'Generating...' : '🔲 Generate QR Codes'}
                         </button>
 
-                        <button
-                            onClick={handleClear}
-                            disabled={isGenerating}
-                            style={{
-                                ...styles.button,
-                                ...styles.dangerButton,
-                                opacity: isGenerating ? 0.6 : 1,
-                                cursor: isGenerating ? 'not-allowed' : 'pointer'
-                            }}
-                        >
-                            🗑️ Clear
-                        </button>
-                    </div>
-
-                    <div style={styles.infoBox}>
-                        <div style={styles.infoTitle}>📋 Excel Export Information:</div>
-                        <div style={styles.infoList}>
-                            • Serial Number: Sequential numbering<br/>
-                            • QR Code: Unique QR code ID<br/>
-                            • Date: Generation date<br/>
-                            • Timestamp: Full date and time<br/>
-                            • Format: Excel (.xlsx) file
-                        </div>
+                        {generatedCodes.length > 0 && (
+                            <button
+                                onClick={handleClear}
+                                style={{
+                                    ...styles.button,
+                                    ...styles.dangerButton
+                                }}
+                            >
+                                🗑️ Clear All
+                            </button>
+                        )}
                     </div>
                 </div>
 
                 {isGenerating && (
-                    <div style={styles.statusContainer}>
+                    <div style={styles.loadingContainer}>
                         <div style={styles.spinner}></div>
-                        <h3>{generationStatus}</h3>
-                        <p style={{ color: '#666', marginTop: '10px' }}>
-                            Please wait... This may take a few moments for large quantities.
-                        </p>
+                        <h3>Generating {quantity} QR Codes...</h3>
+                        <p>Please wait while we create your {selectedType} QR codes.</p>
                     </div>
                 )}
 
-                {generationStatus && !isGenerating && (
-                    <div style={styles.statusContainer}>
-                        <h3>{generationStatus}</h3>
+                {generatedCodes.length > 0 && (
+                    <div style={styles.resultsContainer}>
+                        <div style={styles.resultsHeader}>
+                            <div>
+                                <h2 style={styles.resultsTitle}>
+                                    {qrTypes[selectedType].icon} Generated {selectedType} QR Codes ({generatedCodes.length})
+                                </h2>
+                                <p style={{ color: '#666', margin: '5px 0 0 0' }}>
+                                    Generated on {new Date().toLocaleDateString()} at {new Date().toLocaleTimeString()}
+                                </p>
+                            </div>
+                            <div style={styles.exportButtons}>
+                                <button
+                                    onClick={handleExportPDF}
+                                    style={{
+                                        ...styles.button,
+                                        ...styles.secondaryButton
+                                    }}
+                                >
+                                    📄 Export PDF
+                                </button>
+                                <button
+                                    onClick={handlePrint}
+                                    style={{
+                                        ...styles.button,
+                                        ...styles.warningButton
+                                    }}
+                                >
+                                    🖨️ Print
+                                </button>
+                            </div>
+                        </div>
+
+                        <div ref={qrContainerRef} style={styles.qrGrid} className="qr-grid">
+                            {generatedCodes.map((code, index) => (
+                                <div key={index} style={styles.qrItem} className="qr-item">
+                                    <img
+                                        src={code.dataURL}
+                                        alt={`QR Code ${code.id}`}
+                                        style={styles.qrImage}
+                                    />
+                                    <div style={styles.qrId} className="qr-id">{code.id}</div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 )}
 
-                {!isGenerating && !generationStatus && selectedType && (
-                    <div style={styles.statusContainer}>
+                {!isGenerating && generatedCodes.length === 0 && selectedType && (
+                    <div style={styles.loadingContainer}>
                         <h3>Ready to Generate {selectedType} QR Codes</h3>
-                        <p style={{ color: '#666', marginTop: '10px' }}>
-                            Click "Generate & Export to Excel" to create {quantity.toLocaleString()} unique {selectedType} QR codes.
-                        </p>
+                        <p>Click the "Generate QR Codes" button to create {quantity} {selectedType} QR codes.</p>
                         <div style={{
                             fontSize: '64px',
                             margin: '20px 0',
@@ -452,11 +552,9 @@ const QRCodeGenerator = () => {
                 )}
 
                 {!selectedType && (
-                    <div style={styles.statusContainer}>
+                    <div style={styles.loadingContainer}>
                         <h3>Welcome to QR Code Generator</h3>
-                        <p style={{ color: '#666', marginTop: '10px' }}>
-                            Select a QR code type above to get started.
-                        </p>
+                        <p>Select a QR code type above to get started.</p>
                         <div style={{
                             fontSize: '64px',
                             margin: '20px 0',
@@ -469,10 +567,302 @@ const QRCodeGenerator = () => {
             </div>
         </>
     );
+};// #####################################################################
+// #  Sub-Component 2: UserManagement                                #
+// #####################################################################
+
+const UserManagement = ({ functions }) => {
+    const [formData, setFormData] = useState({ email: '', password: '', role: 'sorter' });
+    const [isLoading, setIsLoading] = useState(false);
+    const [message, setMessage] = useState('');
+    const [messageType, setMessageType] = useState('');
+
+    // Enhanced styles for this component
+    const umStyles = {
+        container: {
+            maxWidth: '500px',
+            margin: '0 auto',
+            backgroundColor: 'white',
+            padding: '40px',
+            borderRadius: '16px',
+            boxShadow: '0 10px 30px rgba(0,0,0,0.08)',
+            fontFamily: "'Inter', 'Segoe UI', sans-serif"
+        },
+        title: {
+            fontSize: '28px',
+            fontWeight: '700',
+            color: '#1a2c3d',
+            marginBottom: '8px',
+            textAlign: 'center',
+            background: 'linear-gradient(135deg, #007bff, #0056b3)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent'
+        },
+        subtitle: {
+            fontSize: '14px',
+            color: '#6c757d',
+            textAlign: 'center',
+            marginBottom: '32px'
+        },
+        form: {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '24px'
+        },
+        inputGroup: {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px'
+        },
+        label: {
+            fontSize: '14px',
+            fontWeight: '600',
+            color: '#343a40',
+            marginLeft: '4px'
+        },
+        input: {
+            padding: '14px 16px',
+            fontSize: '16px',
+            border: '2px solid #e2e8f0',
+            borderRadius: '10px',
+            transition: 'all 0.2s ease',
+            backgroundColor: '#f8fafc',
+            outline: 'none'
+        },
+        inputFocus: {
+            borderColor: '#007bff',
+            backgroundColor: '#ffffff',
+            boxShadow: '0 0 0 3px rgba(0, 123, 255, 0.1)'
+        },
+        select: {
+            padding: '14px 16px',
+            fontSize: '16px',
+            border: '2px solid #e2e8f0',
+            borderRadius: '10px',
+            backgroundColor: '#f8fafc',
+            cursor: 'pointer',
+            outline: 'none',
+            transition: 'all 0.2s ease'
+        },
+        selectFocus: {
+            borderColor: '#007bff',
+            backgroundColor: '#ffffff',
+            boxShadow: '0 0 0 3px rgba(0, 123, 255, 0.1)'
+        },
+        button: {
+            padding: '16px',
+            fontSize: '16px',
+            fontWeight: '600',
+            color: 'white',
+            background: 'linear-gradient(135deg, #007bff, #0056b3)',
+            border: 'none',
+            borderRadius: '10px',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            boxShadow: '0 4px 6px rgba(0, 123, 255, 0.2)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px'
+        },
+        buttonHover: {
+            transform: 'translateY(-2px)',
+            boxShadow: '0 6px 12px rgba(0, 123, 255, 0.25)'
+        },
+        buttonDisabled: {
+            background: 'linear-gradient(135deg, #6c757d, #5a6268)',
+            cursor: 'not-allowed',
+            transform: 'none',
+            boxShadow: 'none'
+        },
+        message: {
+            padding: '16px',
+            borderRadius: '10px',
+            marginTop: '24px',
+            fontWeight: '500',
+            textAlign: 'center',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px'
+        },
+        successMessage: {
+            backgroundColor: '#d4edda',
+            color: '#155724',
+            border: '1px solid #c3e6cb'
+        },
+        errorMessage: {
+            backgroundColor: '#f8d7da',
+            color: '#721c24',
+            border: '1px solid #f5c6cb'
+        },
+        roleOptions: {
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '10px',
+            marginTop: '8px'
+        },
+        roleOption: {
+            padding: '12px',
+            border: '2px solid #e2e8f0',
+            borderRadius: '8px',
+            textAlign: 'center',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            backgroundColor: '#f8fafc'
+        },
+        roleOptionSelected: {
+            borderColor: '#007bff',
+            backgroundColor: '#e6f2ff',
+            boxShadow: '0 0 0 2px rgba(0, 123, 255, 0.2)'
+        },
+        roleIcon: {
+            fontSize: '20px',
+            marginBottom: '6px'
+        }
+    };
+
+    const handleInputChange = (e) => {
+        setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+    };
+
+    const handleRoleSelect = (role) => {
+        setFormData(prev => ({ ...prev, role }));
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setMessage('');
+        try {
+            const createNewUser = httpsCallable(functions, 'createNewUser');
+            const result = await createNewUser({
+                email: formData.email,
+                password: formData.password,
+                role: formData.role
+            });
+            setMessage(result.data.message);
+            setMessageType('success');
+            setFormData({ email: '', password: '', role: 'sorter' });
+        } catch (error) {
+            setMessage(error.message);
+            setMessageType('error');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // Role configurations with icons
+    const roles = {
+        sorter: { label: 'Sorter', icon: '👨‍💼' },
+        manager: { label: 'Manager', icon: '👔' },
+        admin: { label: 'Admin', icon: '👑' }
+    };
+
+    return (
+        <div style={umStyles.container}>
+            <h2 style={umStyles.title}>Create New User</h2>
+            <p style={umStyles.subtitle}>Add a new user to the system with appropriate permissions</p>
+
+            <form onSubmit={handleSubmit} style={umStyles.form}>
+                <div style={umStyles.inputGroup}>
+                    <label style={umStyles.label}>Email Address</label>
+                    <input
+                        type="email"
+                        name="email"
+                        value={formData.email}
+                        onChange={handleInputChange}
+                        style={umStyles.input}
+                        required
+                        placeholder="user@example.com"
+                        onFocus={(e) => Object.assign(e.target.style, umStyles.inputFocus)}
+                        onBlur={(e) => {
+                            // Reset to base input styles
+                            Object.assign(e.target.style, umStyles.input);
+                            // Remove the focus-specific styles
+                            e.target.style.borderColor = umStyles.input.borderColor;
+                            e.target.style.backgroundColor = umStyles.input.backgroundColor;
+                            e.target.style.boxShadow = umStyles.input.boxShadow;
+                        }}
+                    />
+                </div>
+
+                <div style={umStyles.inputGroup}>
+                    <label style={umStyles.label}>Password</label>
+                    <input
+                        type="password"
+                        name="password"
+                        value={formData.password}
+                        onChange={handleInputChange}
+                        style={umStyles.input}
+                        required
+                        minLength={6}
+                        placeholder="Minimum 6 characters"
+                    />
+                </div>
+
+                <div style={umStyles.inputGroup}>
+                    <label style={umStyles.label}>User Role</label>
+                    <div style={umStyles.roleOptions}>
+                        {Object.entries(roles).map(([key, { label, icon }]) => (
+                            <div
+                                key={key}
+                                style={{
+                                    ...umStyles.roleOption,
+                                    ...(formData.role === key ? umStyles.roleOptionSelected : {})
+                                }}
+                                onClick={() => handleRoleSelect(key)}
+                            >
+                                <div style={umStyles.roleIcon}>{icon}</div>
+                                <div style={{ fontSize: '14px', fontWeight: '600' }}>{label}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <button
+                    type="submit"
+                    style={{
+                        ...umStyles.button,
+                        ...(isLoading ? umStyles.buttonDisabled : {}),
+                    }}
+                    disabled={isLoading}
+                    onMouseOver={(e) => !isLoading && (e.target.style = {...umStyles.button, ...umStyles.buttonHover})}
+                    onMouseOut={(e) => !isLoading && (e.target.style = umStyles.button)}
+                >
+                    {isLoading ? (
+                        <>
+                            <span>Creating User...</span>
+                            <div style={{ width: '16px', height: '16px', border: '2px solid transparent', borderTop: '2px solid white', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+                        </>
+                    ) : (
+                        <>
+                            <span>➕ Create User</span>
+                        </>
+                    )}
+                </button>
+            </form>
+
+            {message && (
+                <div style={{
+                    ...umStyles.message,
+                    ...(messageType === 'success' ? umStyles.successMessage : umStyles.errorMessage)
+                }}>
+                    {messageType === 'success' ? '✅' : '❌'} {message}
+                </div>
+            )}
+
+            <style>
+                {`
+                    @keyframes spin {
+                        0% { transform: rotate(0deg); }
+                        100% { transform: rotate(360deg); }
+                    }
+                `}
+            </style>
+        </div>
+    );
 };
-
-
-
 // #####################################################################
 // #  Sub-Component 3: AddSource                                     #
 // #####################################################################
@@ -1635,11 +2025,12 @@ const Dashboard = ({ auth, db, functions }) => {
         if (activeNav === 'QR Generator') return <QRCodeGenerator />;
         if (activeNav === 'User Management') return <UserManagement functions={functions} />;
         if (activeNav === 'Add Sources') return <AddSource db={db} />;
-        if (activeNav === 'Add Vendor') return <AddVendor db={db} />; // Add this line
+        if (activeNav === 'Add Vendor') return <AddVendor db={db} />;
         if (activeNav === 'Furniture') return <div style={{ textAlign: 'center' }}><h2>Furniture Dashboard Coming Soon</h2></div>;
-        if (activeNav === 'Remove Data') return <RemoveData db={db} functions={functions} />; // <-- ADDED THIS
+        if (activeNav === 'Remove Data') return <RemoveData db={db} functions={functions} />;
         if (activeNav === 'View Batches') return <ViewBatches db={db} />;
         if (activeNav === 'Traceability') return <TraceabilityDashboard db={db} />;
+        if (activeNav === 'Vendor Shipments') return <VendorShipments db={db} />;
 
         return (
             <>
@@ -1675,8 +2066,9 @@ const Dashboard = ({ auth, db, functions }) => {
                     <li style={{...styles.sidebarNavItem, ...(activeNav === 'Furniture' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('Furniture')}>Furniture</li>
                     <li style={{...styles.sidebarNavItem, ...(activeNav === 'User Management' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('User Management')}>User Management</li>
                     <li style={{...styles.sidebarNavItem, ...(activeNav === 'Add Sources' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('Add Sources')}>+ Add Sources</li>
-                    <li style={{...styles.sidebarNavItem, ...(activeNav === 'Add Vendor' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('Add Vendor')}>+ Add Vendor</li> {/* Add this line */}
+                    <li style={{...styles.sidebarNavItem, ...(activeNav === 'Add Vendor' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('Add Vendor')}>+ Add Vendor</li>
                     <li style={{...styles.sidebarNavItem, ...(activeNav === 'View Batches' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('View Batches')}>📄 View Batches</li>
+                    <li style={{...styles.sidebarNavItem, ...(activeNav === 'Vendor Shipments' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('Vendor Shipments')}>🚚 Vendor Shipments</li>
                     <li style={{...styles.sidebarNavItem, ...(activeNav === 'QR Generator' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('QR Generator')}>🔲 QR Generator</li>
                     <li style={{...styles.sidebarNavItem, ...(activeNav === 'Remove Data' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('Remove Data')}>🗑️ Remove Data</li>
                     <li style={{...styles.sidebarNavItem, ...(activeNav === 'Traceability' ? styles.activeNavItem : {})}} onClick={() => handleNavClick('Traceability')}>📄ιχ Traceability</li>
