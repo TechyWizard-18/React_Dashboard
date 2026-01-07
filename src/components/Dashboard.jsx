@@ -89,6 +89,7 @@ const QRCodeGenerator = () => {
         setGenerationStatus(`Generating ${quantity.toLocaleString()} QR codes...`);
 
         try {
+            const batchSize = 10000; // Process in batches for efficiency
             const allData = [];
             const generationTimestamp = new Date();
             const generationDate = generationTimestamp.toLocaleDateString('en-IN');
